@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#7c3aed" />
+    <meta
+      name="description"
+      content="忠欣蔬果內部工作台：每日叫貨、異常交接、客戶與報價管理。"
+    />
+    <title>忠欣蔬果｜營運工作台</title>
+    <link rel="stylesheet" href="styles.css?v=1.0.0" />
+  </head>
+  <body>
+    <a class="skip" href="#main">跳至主要內容</a>
+    <aside class="sidebar">
+      <a class="brand" href="#orders"
+        ><span class="brand-mark">✳</span
+        ><span>忠欣蔬果<small>CHUNGHSIN WORKSPACE</small></span></a
+      >
+      <div class="workspace-label">營運工作空間 <span>⌄</span></div>
+      <div class="nav-label">日常作業</div>
+      <nav aria-label="主要導覽">
+        <a href="#orders" data-page="orders"
+          ><span class="nav-icon">▦</span>每日打勾單<span
+            class="nav-count"
+            id="navPending"
+            >0</span
+          ></a
+        >
+        <a href="#reports" data-page="reports"
+          ><span class="nav-icon">▤</span>異常與交接</a
+        >
+        <a href="#quotes" data-page="quotes"
+          ><span class="nav-icon">▧</span>報價單管理</a
+        >
+        <div class="nav-label">資料管理</div>
+        <a href="#customers" data-page="customers"
+          ><span class="nav-icon">♧</span>客戶與車輛</a
+        >
+        <a href="#history" data-page="history"
+          ><span class="nav-icon">◷</span>歷史紀錄</a
+        >
+        <a href="#settings" data-page="settings"
+          ><span class="nav-icon">⚙</span>系統設定</a
+        >
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="mini-plant">🌱</div>
+        <strong>把繁瑣留給系統</strong>
+        <p>把新鮮，準時送到每一位客戶。</p>
+        <span class="version">工作台 v1.0.0</span>
+      </div>
+      <div class="sidebar-footer">
+        <span class="avatar">忠</span>
+        <div>
+          <strong id="userName">本機工作空間</strong
+          ><small id="userRole">資料保存在此瀏覽器</small>
+        </div>
+        <button class="icon-btn" data-action="settings" aria-label="帳號設定">
+          ↗
+        </button>
+      </div>
+    </aside>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="breadcrumbs">
+          工作空間 <span>/</span> <strong id="breadcrumb">每日打勾單</strong>
+        </div>
+        <div class="top-actions">
+          <span id="connection" class="connection" aria-live="polite"
+            ><i></i>本機模式</span
+          ><button class="icon-btn" data-action="help" aria-label="使用說明">
+            ?</button
+          ><span class="top-divider"></span><span class="avatar small">忠</span>
+        </div>
+      </header>
+      <main id="main" tabindex="-1"></main>
+      <footer class="footer">
+        <span
+          >忠欣蔬果有限公司
+          <span class="dot">·</span> 每一份新鮮，都有我們的用心。</span
+        ><span id="footerStatus">本機儲存 · 不會寫入既有雲端資料</span>
+      </footer>
+    </div>
+    <dialog id="modal" aria-labelledby="modalTitle">
+      <div class="modal-header">
+        <div>
+          <span class="eyebrow" id="modalEyebrow">CHUNGHSIN WORKSPACE</span>
+          <h2 id="modalTitle"></h2>
+        </div>
+        <button
+          class="icon-btn"
+          data-action="close-modal"
+          aria-label="關閉視窗"
+        >
+          ×
+        </button>
+      </div>
+      <div id="modalBody"></div>
+    </dialog>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="app.js?v=1.0.0"></script>
+  </body>
+</html>
