@@ -1,4 +1,5 @@
-export const VERSION = "1.0.0";
+import { normalizeTracking } from "./orders.js?v=1.1.0";
+export const VERSION = "1.1.0";
 export const today = () =>
   new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Taipei",
@@ -81,7 +82,14 @@ export function loadScript(src) {
 export class Store extends EventTarget {
   constructor() {
     super();
-    this.rows = JSON.parse(localStorage.getItem(KEY) || "[]");
+    this.rows = normalizeTracking(
+      JSON.parse(localStorage.getItem(KEY) || "[]"),
+      today(),
+    );
+    if (this.rows.length) this.persist();
+    this.analyticsRevision = 0;
+    this.analyticsFullRefresh = true;
+    this.analyticsCustomers = new Map();
     this.sb = null;
     this.cloud = false;
     this.cursor = 0;
@@ -94,7 +102,8 @@ export class Store extends EventTarget {
     this.activeDay = today();
     this.onStorage = (e) => {
       if (e.key === KEY && !this.cloud) {
-        this.rows = JSON.parse(e.newValue || "[]");
+        this.rows = normalizeTracking(JSON.parse(e.newValue || "[]"), today());
+        this.analyticsRevision++;
         this.emit();
       }
     };
@@ -116,11 +125,19 @@ export class Store extends EventTarget {
   get(kind, id) {
     return this.list(kind).find((r) => r.id === id);
   }
+  touch(kind, id) {
+    if (!["orders", "customers", "groups"].includes(kind)) return;
+    this.analyticsRevision++;
+    if (kind === "orders" && id)
+      this.analyticsCustomers.set(id.slice(11), this.analyticsRevision);
+    else this.analyticsFullRefresh = true;
+  }
   merge(r) {
     const old = this.rows.find((x) => x.kind === r.kind && x.id === r.id);
     if (old && Number(old.revision) > Number(r.revision)) return;
     this.rows = this.rows.filter((x) => !(x.kind === r.kind && x.id === r.id));
     this.rows.push(r);
+    this.touch(r.kind, r.id);
   }
   persist() {
     localStorage.setItem(KEY, JSON.stringify(this.rows));
@@ -144,6 +161,13 @@ export class Store extends EventTarget {
     const original = this.rows.find((r) => r.kind === kind && r.id === id);
     if ((original?.revision || 0) !== revision)
       throw Error("資料已在其他視窗更新，請重新開啟後再試。");
+    if (kind === "customers")
+      data = {
+        ...data,
+        tracking_since:
+          original?.data.tracking_since || data.tracking_since || today(),
+      };
+    this.touch(kind, id);
     const candidate = {
       kind,
       id,
@@ -167,6 +191,7 @@ export class Store extends EventTarget {
         });
         Object.assign(candidate, result);
       } else this.persist();
+      this.touch(kind, id);
       this.status = this.cloud ? "已同步" : "本機已儲存";
       this.emit();
       return candidate;
@@ -175,6 +200,7 @@ export class Store extends EventTarget {
         this.rows = this.rows.filter((r) => r !== candidate);
         if (original) this.rows.push(original);
       }
+      this.touch(kind, id);
       this.status = "儲存失敗 · 未同步";
       this.emit();
       throw e;
@@ -183,6 +209,20 @@ export class Store extends EventTarget {
   async batch(operations) {
     if (!operations.length) return;
     const snapshot = structuredClone(this.rows);
+    operations = operations.map((o) =>
+      o.kind === "customers"
+        ? {
+            ...o,
+            data: {
+              ...o.data,
+              tracking_since:
+                this.get("customers", o.id)?.tracking_since ||
+                o.data.tracking_since ||
+                today(),
+            },
+          }
+        : o,
+    );
     try {
       if (this.cloud) {
         const rs = await this.rpc("batch", {
@@ -219,6 +259,7 @@ export class Store extends EventTarget {
         }
         this.persist();
       }
+      for (const op of operations) this.touch(op.kind, op.id);
       this.status = this.cloud ? "已同步" : "本機已儲存";
       this.emit();
     } catch (err) {
@@ -299,6 +340,7 @@ export class Store extends EventTarget {
       do {
         events = await this.rpc("changes", { p_after: this.cursor });
         for (const e of events) {
+          this.touch(e.kind, e.id);
           if (e.kind === "mappings") this.mappingDirty = true;
           const old = this.rows.find((x) => x.kind === e.kind && x.id === e.id);
           if (e.deleted)
@@ -454,6 +496,8 @@ export class Store extends EventTarget {
         at: new Date().toISOString(),
       },
     });
+    this.rows = normalizeTracking(this.rows, today());
+    this.analyticsRevision++;
     this.persist();
     this.emit();
   }

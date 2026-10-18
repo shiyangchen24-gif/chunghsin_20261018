@@ -5,7 +5,7 @@ import {
   escape as e,
   readConfig,
   saveConfig,
-} from "./js/store.js";
+} from "./js/store.js?v=1.1.0";
 import {
   fields,
   guess,
@@ -20,11 +20,25 @@ import {
   reportHeaders,
   reportValues,
   md,
-} from "./js/excel.js";
+} from "./js/excel.js?v=1.1.0";
+import {
+  ORDER_LABELS,
+  shiftDay,
+  trackingSince,
+  dailyStatuses,
+  monthSummary,
+  patchMonthSummary,
+} from "./js/orders.js?v=1.1.0";
 const $ = (s) => document.querySelector(s),
   main = $("#main");
 const state = {
   page: "orders",
+  month: today().slice(0, 7),
+  monthData: null,
+  monthLoading: false,
+  daySummary: null,
+  summaryDate: null,
+  analyticsError: "",
   date: today(),
   filter: "all",
   group: "all",
@@ -32,8 +46,7 @@ const state = {
   view: "grid",
   report: "abnormal",
   fixedOnly: false,
-  warnCodes: null,
-  warnOnly: false,
+
   quoteMode: "有貨號",
   stage: "all",
   selected: new Set(),
@@ -52,6 +65,7 @@ const labels = {
   orders: "每日打勾單",
   reports: "異常與交接",
   quotes: "報價單管理",
+  dashboard: "Dashboard",
   customers: "客戶與車輛",
   history: "歷史紀錄",
   settings: "系統設定",
@@ -64,9 +78,13 @@ const customers = () =>
   store
     .list("customers", (c) => c.active !== false)
     .sort((a, b) => a.code.localeCompare(b.code, "zh-Hant"));
+const dayCustomers = () =>
+  customers().filter(
+    (c) => !c.tracking_since || c.tracking_since <= state.date,
+  );
 const orders = () => store.list("orders", (r) => r.date === state.date);
 const order = (c) => orders().find((o) => o.customer_code === c.code);
-const status = (c) => order(c)?.status || "pending";
+const status = (c) => state.currentStatuses?.get(c.code) || "pending";
 const profiles = () => store.list("profiles");
 const profile = (c) =>
   profiles().find((p) => p.customer_code === c.code) || {
@@ -139,15 +157,13 @@ function stat(label, n, total, sign, color, note) {
   return `<article class="stat ${color}"><div class="stat-top">${label}${icon(sign)}</div><div class="stat-number">${n}<small>${label.includes("率") ? "%" : "位"}</small></div><div class="stat-bottom"><span>${note}</span><b>${total ? Math.round((n / total) * 100) + "%" : ""}</b></div><div class="progress"><span style="width:${total ? Math.min(100, (n / total) * 100) : 0}%"></span></div></article>`;
 }
 function orderPage() {
-  const cs = customers(),
-    done = cs.filter((c) => status(c) === "ordered").length,
-    pending = cs.filter((c) => status(c) === "pending").length,
-    off = cs.length - done - pending;
+  const cs = dayCustomers(),
+    counts = { ordered: 0, pending: 0, off: 0, overdue: 0 };
+  for (const c of cs) counts[status(c)]++;
   const groups = [...new Set(cs.map((c) => c.group || "未分類"))];
   const filtered = cs.filter(
     (c) =>
       (!state.fixedOnly || c.fixed) &&
-      (!state.warnOnly || state.warnCodes?.includes(c.code)) &&
       (state.filter === "all" || status(c) === state.filter) &&
       (state.group === "all" || (c.group || "未分類") === state.group) &&
       [c.name, c.code, c.car_no, c.notes]
@@ -155,45 +171,42 @@ function orderPage() {
         .toLowerCase()
         .includes(state.search.toLowerCase()),
   );
+  const ratio = cs.length ? Math.round((counts.ordered / cs.length) * 100) : 0;
   return (
     heading(
       "每日打勾單",
-      "從一聲早安開始，讓今天的每一筆訂單都井然有序。",
+      "左鍵確認叫貨、右鍵設定今日不叫貨，讓每日作業更俐落。",
       dateInput() +
         `<button class="btn primary" data-action="add-customer">＋ 新增客戶</button>`,
     ) +
-    `<section class="welcome"><div class="welcome-copy"><h2>新鮮的一天，準備好了嗎？ <span aria-hidden="true">☀</span></h2><p>今天還有 <strong>${pending}</strong> 位客戶待確認叫貨，一起把新鮮送到位。</p><div class="welcome-note"><i></i>${state.date === today() ? "今日" : "所選日期"}作業總覽 <span>・</span> ${cs.length ? Math.round((done / cs.length) * 100) : 0}% 已完成</div></div><div class="hero-art" aria-hidden="true"><div class="orbit"></div><span class="veg broccoli">🥦</span><span class="veg carrot">🥕</span><span class="veg tomato">🍅</span><span class="spark">✧</span><span class="spark two">✦</span></div></section><section class="stats" aria-label="叫貨統計">${stat("客戶總數", cs.length, 0, "♧", "", "所有啟用中的客戶")}${stat("已叫貨", done, cs.length, "✓", "green", "今日已確認叫貨")}${stat("待叫貨", pending, cs.length, "◷", "orange", "等待確認的客戶")}${stat("今日不叫貨", off, cs.length, "−", "blue", "已確認暫不叫貨")}</section><div class="work-layout"><section class="panel"><div class="section-title"><h2>客戶叫貨狀態<span>DAILY CHECKLIST</span></h2><button class="text-link" data-action="order-export">↓ 匯出紀錄</button></div><div class="toolbar"><div class="segments">${[
-      ["all", "全部", cs.length],
-      ["pending", "待叫貨", pending],
-      ["ordered", "已叫貨", done],
-      ["off", "不叫貨", off],
-    ]
-      .map(
-        ([v, l, n]) =>
-          `<button data-filter="${v}" class="${state.filter === v ? "active" : ""}" aria-pressed="${state.filter === v}">${l}<b>${n}</b></button>`,
-      )
-      .join(
-        "",
-      )}</div><label class="search">⌕ <input id="search" placeholder="搜尋客戶名稱、代號…" aria-label="搜尋客戶" value="${e(state.search)}"></label></div><div class="filter-row"><button class="chip ${state.group === "all" ? "active" : ""}" data-group="all">全部系列</button>${groups.map((g) => `<button class="chip ${state.group === g ? "active" : ""}" data-group="${e(g)}">${e(g)} ${cs.filter((c) => (c.group || "未分類") === g && status(c) === "ordered").length}/${cs.filter((c) => (c.group || "未分類") === g).length}</button>`).join("")}<button class="chip ${state.fixedOnly ? "active" : ""}" data-action="fixed-filter">固定叫貨</button><button class="chip ${state.warnOnly ? "active" : ""}" data-action="warn-filter">三天未叫</button><div class="view-switch"><button data-view="grid" class="${state.view === "grid" ? "active" : ""}" aria-label="卡片檢視">▦</button><button data-view="list" class="${state.view === "list" ? "active" : ""}" aria-label="清單檢視">☷</button></div></div><div class="customer-grid ${state.view === "list" ? "list-mode" : ""}">${filtered.length ? filtered.map(customerCard).join("") : empty(cs.length ? "找不到符合的客戶" : "讓今天的工作，從第一位客戶開始", cs.length ? "試試其他關鍵字或系列。" : "新增客戶，或先載入範例體驗操作。", cs.length ? "" : `<button class="btn primary" data-action="demo">載入示範資料</button>`)}</div><div class="panel-footer"><span>顯示 ${filtered.length} / ${cs.length} 位客戶</span><span>✓ 點擊勾選即確認叫貨 · 點 ⋯ 編輯狀態</span></div></section><aside class="right-rail">${noticePanel()}${activityPanel()}<div class="tip-card"><h3>✧ 工作小提醒</h3><p>點擊客戶卡片右上方的勾選框，<br>即可確認叫貨。更改狀態請使用 ⋯。</p></div></aside></div>`
+    `<section class="order-progress-panel" aria-label="今日叫貨進度"><div class="order-progress-heading"><h2>叫貨進度</h2><strong id="orderProgressText">已叫 ${counts.ordered} 家 ／ 總計 ${cs.length} 家</strong><span>${ratio}%</span></div><div class="order-progress-track" role="progressbar" aria-label="叫貨完成進度" aria-valuemin="0" aria-valuemax="${Math.max(1, cs.length)}" aria-valuenow="${counts.ordered}" aria-valuetext="已叫 ${counts.ordered} 家，總計 ${cs.length} 家"><div class="order-progress-fill" style="width:${ratio}%"></div></div></section>
+ ${store.cloud && state.analyticsError ? `<div class="form-note warning">${e(state.analyticsError)} · 三日未叫貨尚未完成雲端核對。請部署 sql/02_dashboard.sql。</div>` : ""}
+ <section class="stats order-stats" aria-label="叫貨統計">${stat("客戶總數", cs.length, 0, "♧", "", "所有啟用中的客戶")}${stat("已叫貨", counts.ordered, cs.length, "✓", "green", "當日已確認叫貨")}${stat("未叫貨", counts.pending, cs.length, "◷", "orange", "尚未確認叫貨")}${stat("今日不叫貨", counts.off, cs.length, "−", "blue", "當日明確不叫貨")}${stat("三日未叫貨", counts.overdue, cs.length, "!", "red", "含當日連續三日未叫貨")}</section><div class="work-layout"><section class="panel"><div class="section-title"><h2>客戶叫貨狀態<span>DAILY CHECKLIST</span></h2><button class="text-link" data-action="order-export">↓ 匯出紀錄</button></div><div class="toolbar"><div class="segments">${[
+   ["all", "全部", cs.length],
+   ["ordered", "已叫貨", counts.ordered],
+   ["pending", "未叫貨", counts.pending],
+   ["off", "今日不叫貨", counts.off],
+   ["overdue", "三日未叫貨", counts.overdue],
+ ]
+   .map(
+     ([v, label, n]) =>
+       `<button data-filter="${v}" class="${state.filter === v ? "active" : ""}" aria-pressed="${state.filter === v}">${label}<b>${n}</b></button>`,
+   )
+   .join(
+     "",
+   )}</div><label class="search">⌕ <input id="search" placeholder="搜尋客戶名稱、代號…" aria-label="搜尋客戶" value="${e(state.search)}"></label></div><div class="filter-row"><button class="chip ${state.group === "all" ? "active" : ""}" data-group="all">全部系列</button>${groups.map((g) => `<button class="chip ${state.group === g ? "active" : ""}" data-group="${e(g)}">${e(g)} ${cs.filter((c) => (c.group || "未分類") === g && status(c) === "ordered").length}/${cs.filter((c) => (c.group || "未分類") === g).length}</button>`).join("")}<button class="chip ${state.fixedOnly ? "active" : ""}" data-action="fixed-filter">固定叫貨</button><div class="view-switch"><button data-view="grid" class="${state.view === "grid" ? "active" : ""}" aria-label="卡片檢視">▦</button><button data-view="list" class="${state.view === "list" ? "active" : ""}" aria-label="清單檢視">☷</button></div></div><div class="customer-grid ${state.view === "list" ? "list-mode" : ""}">${filtered.length ? filtered.map(customerCard).join("") : empty(cs.length ? "找不到符合的客戶" : "讓今天的工作，從第一位客戶開始", cs.length ? "試試其他關鍵字或系列。" : "新增客戶，或先載入範例體驗操作。", cs.length ? "" : `<button class="btn primary" data-action="demo">載入示範資料</button>`)}</div><div class="panel-footer"><span>顯示 ${filtered.length} / ${cs.length} 位客戶</span><span>左鍵／Enter：已叫貨 · 右鍵：今日不叫貨 · ⋯：編輯</span></div></section><aside class="right-rail">${activityPanel()}</aside></div>`
   );
 }
 function customerCard(c) {
   const s = status(c),
     o = order(c);
-  return `<article class="customer-card ${s === "ordered" ? "ordered" : s === "off" ? "absent" : ""}"><div class="customer-top"><span class="customer-code">${e(c.code)}</span><button class="order-check ${s === "ordered" ? "done" : ""}" data-check="${e(c.code)}" aria-label="${e(c.name)}${s === "ordered" ? "已叫貨，編輯狀態" : "確認叫貨"}" aria-pressed="${s === "ordered"}">${s === "ordered" ? "✓" : s === "off" ? "−" : ""}</button></div><h3 title="${e(c.name)}">${e(c.name)}</h3><div class="customer-meta"><span class="car">${e(c.car_no || "未配車")}</span><span>·</span><span>${e(c.group || "未分類")}${c.fixed ? " · 固定" : ""}</span></div><div class="customer-bottom"><span>${s === "ordered" ? "✓ 已叫貨　" + time(o?.at) : s === "off" ? "− 今日不叫貨" : "◷ 等待叫貨"}</span><button class="edit-dots" data-edit-order="${e(c.code)}" aria-label="編輯 ${e(c.name)} 狀態">⋯</button></div></article>`;
-}
-function noticePanel() {
-  const notes = store
-    .list("notices")
-    .sort((a, b) => (b.at || "").localeCompare(a.at || ""))
-    .slice(0, 3);
-  return `<section class="panel"><div class="rail-heading"><span>♧</span>今日公告<button class="icon-btn" data-action="notice" aria-label="新增公告">＋</button></div>${notes.length ? notes.map((n, i) => `<article class="notice ${i % 2 ? "purple" : ""}"><div class="notice-title">${i % 2 ? "✦" : "▱"} ${e(n.title)}</div><p>${e(n.text)}</p><small>${dateShort(n.at)} · ${time(n.at)} <button class="text-link" data-delete-notice="${n.id}" aria-label="刪除公告">×</button></small></article>`).join("") : '<p class="subtle">目前沒有公告，點 ＋ 新增工作提醒。</p>'}<div class="rail-footer">把重要的事，留給每一位夥伴。</div></section>`;
+  return `<article class="customer-card ${s === "ordered" ? "ordered" : s === "off" ? "absent" : s === "overdue" ? "overdue" : ""}" data-order-card="${e(c.code)}" data-status="${s}" tabindex="0" aria-label="${e(c.name)}，${ORDER_LABELS[s]}。按 Enter 確認叫貨"><div class="customer-top"><span class="customer-code">${e(c.code)}</span><button class="order-check ${s === "ordered" ? "done" : ""}" data-check="${e(c.code)}" aria-label="${e(c.name)}確認叫貨" aria-pressed="${s === "ordered"}">${s === "ordered" ? "✓" : s === "off" ? "−" : s === "overdue" ? "!" : ""}</button></div><h3 title="${e(c.name)}">${e(c.name)}</h3><div class="customer-meta"><span class="car">${e(c.car_no || "未配車")}</span><span>·</span><span>${e(c.group || "未分類")}${c.fixed ? " · 固定" : ""}</span></div><div class="customer-bottom"><span>${s === "ordered" ? "✓ 已叫貨　" + time(o?.at) : s === "off" ? "− 今日不叫貨" : s === "overdue" ? "! 三日未叫貨" : "◷ 未叫貨"}</span><button class="edit-dots" data-edit-order="${e(c.code)}" aria-label="編輯 ${e(c.name)} 狀態">⋯</button></div></article>`;
 }
 function activityPanel() {
   const os = orders()
     .sort((a, b) => (b.at || "").localeCompare(a.at || ""))
     .slice(0, 4);
-  return `<section class="panel"><div class="rail-heading"><span>◷</span>最近動態</div>${os.length ? os.map((o) => `<div class="activity"><span class="activity-dot ${o.status === "ordered" ? "" : "purple"}"></span><div><strong>${e(customers().find((c) => c.code === o.customer_code)?.name || o.customer_code)}</strong><br>${o.status === "ordered" ? "已確認叫貨" : o.status === "off" ? "已設為不叫貨" : "已改為待叫貨"}<small>${time(o.at)}</small></div></div>`).join("") : '<p class="subtle">完成第一筆叫貨後，這裡會顯示最新動態。</p>'}<button class="text-link" data-action="history">查看歷史紀錄 →</button></section>`;
+  return `<section class="panel"><div class="rail-heading"><span>◷</span>最近動態</div>${os.length ? os.map((o) => `<div class="activity"><span class="activity-dot ${o.status === "ordered" ? "" : "purple"}"></span><div><strong>${e(customers().find((c) => c.code === o.customer_code)?.name || o.customer_code)}</strong><br>${o.status === "ordered" ? "已確認叫貨" : o.status === "off" ? "已設為不叫貨" : "已改為未叫貨"}<small>${time(o.at)}</small></div></div>`).join("") : '<p class="subtle">完成第一筆叫貨後，這裡會顯示最新動態。</p>'}<button class="text-link" data-action="history">查看歷史紀錄 →</button></section>`;
 }
 const field = (label, name, value = "", type = "text", extra = "") =>
   `<label class="field ${extra.includes("data-full") ? "full" : ""}">${label}<input name="${name}" type="${type}" value="${e(value)}" ${extra}></label>`;
@@ -259,36 +272,44 @@ function editOrder(code) {
   };
   openModal(
     "編輯叫貨狀態",
-    `<form id="orderForm" data-code="${e(code)}"><div class="form-note">${e(c.name)} · ${state.date}<br>已叫貨改回待叫貨，需在此確認後儲存。</div>${select(
+    `<form id="orderForm" data-code="${e(code)}"><div class="form-note">${e(c.name)} · ${state.date}<br>已叫貨改回未叫貨，需在此確認後儲存。</div>${select(
       "叫貨狀態",
       "status",
       [
-        ["pending", "待叫貨"],
+        ["pending", "未叫貨"],
         ["ordered", "已叫貨"],
         ["off", "今日不叫貨"],
       ],
       o?.status || "pending",
-    )}${formButtons()}</form>`,
+    )}<p class="subtle" style="margin-top:14px">三日未叫貨由系統判別，不能手動指定；平板與手機可在此選擇今日不叫貨。</p>${formButtons()}</form>`,
   );
 }
+const pendingOrderWrites = new Set();
 async function changeOrder(code, next = "ordered", expected) {
   const c = customers().find((c) => c.code === code),
     o = order(c);
-  if (expected === undefined && status(c) !== "pending") return editOrder(code);
-  await store.mutate(
-    "orders",
-    `${state.date}:${code}`,
-    {
-      customer_code: code,
-      date: state.date,
-      status: next,
-      fixed: c.fixed,
-      at: new Date().toISOString(),
-    },
-    { revision: expected ?? o?.revision ?? 0 },
-  );
-  if (expected !== undefined) closeModal();
-  toast(store.cloud ? "叫貨狀態已同步" : "叫貨狀態已儲存在本機");
+  if (!c) return;
+  if (pendingOrderWrites.has(code)) return;
+  if (expected === undefined && o?.status === next) return;
+  pendingOrderWrites.add(code);
+  try {
+    await store.mutate(
+      "orders",
+      `${state.date}:${code}`,
+      {
+        customer_code: code,
+        date: state.date,
+        status: next,
+        fixed: c.fixed,
+        at: new Date().toISOString(),
+      },
+      { revision: expected ?? o?.revision ?? 0 },
+    );
+    if (expected !== undefined) closeModal();
+    toast(store.cloud ? "叫貨狀態已同步" : "叫貨狀態已儲存在本機");
+  } finally {
+    pendingOrderWrites.delete(code);
+  }
 }
 function reportForm(r = {}) {
   const ab = state.report === "abnormal";
@@ -344,7 +365,10 @@ function quotesPage() {
       (c) =>
         state.stage === "all" ||
         (state.stage === "lookup"
-          ? (store.cloud ? (store.mappingCounts?.[c.code] ?? -1) : store.list("mappings", (m) => m.customer_code === c.code).length) === 0
+          ? (store.cloud
+              ? (store.mappingCounts?.[c.code] ?? -1)
+              : store.list("mappings", (m) => m.customer_code === c.code)
+                  .length) === 0
           : stage(c) === state.stage),
     );
   const selected = customers().filter((c) => state.selected.has(c.code));
@@ -443,10 +467,21 @@ function historyPage() {
             })
             .join("")}</div>`
         : ""
-    }<div class="section-title" style="margin-top:45px"><h2>作業紀錄</h2><span class="subtle">預設近 30 天，每頁最多 50 筆</span></div>${rows.length ? rows.map((o) => `<div class="history-row"><span class="avatar">${o.status === "ordered" ? "✓" : "◷"}</span><div><strong>${e(customers().find((c) => c.code === o.customer_code)?.name || o.customer_code)}</strong><small>${o.date} · ${time(o.at)} · ${o.status === "ordered" ? "已叫貨" : o.status === "off" ? "不叫貨" : "待叫貨"}</small></div><span class="badge" style="margin-left:auto;align-self:center">版本 ${o.revision}</span></div>`).join("") : empty("尚無歷史紀錄", "每日的叫貨操作會保留在對應的日期。")}<div class="pagination">${store.cloud ? `<button class="btn small" data-action="history-prev" ${state.historyPages.length <= 1 ? "disabled" : ""}>上一頁</button><button class="btn small" data-action="history-next" ${rows.length < 50 ? "disabled" : ""}>下一頁</button>` : "<span>本機紀錄最多顯示最近 50 筆，可匯出全部備份。</span>"}</div></section>`
+    }<div class="section-title" style="margin-top:45px"><h2>作業紀錄</h2><span class="subtle">預設近 30 天，每頁最多 50 筆</span></div>${rows.length ? rows.map((o) => `<div class="history-row"><span class="avatar">${o.status === "ordered" ? "✓" : "◷"}</span><div><strong>${e(customers().find((c) => c.code === o.customer_code)?.name || o.customer_code)}</strong><small>${o.date} · ${time(o.at)} · ${o.status === "ordered" ? "已叫貨" : o.status === "off" ? "今日不叫貨" : "未叫貨"}</small></div><span class="badge" style="margin-left:auto;align-self:center">版本 ${o.revision}</span></div>`).join("") : empty("尚無歷史紀錄", "每日的叫貨操作會保留在對應的日期。")}<div class="pagination">${store.cloud ? `<button class="btn small" data-action="history-prev" ${state.historyPages.length <= 1 ? "disabled" : ""}>上一頁</button><button class="btn small" data-action="history-next" ${rows.length < 50 ? "disabled" : ""}>下一頁</button>` : "<span>本機紀錄最多顯示最近 50 筆，可匯出全部備份。</span>"}</div></section>`
   );
 }
 function render() {
+  state.currentStatuses = dailyStatuses(
+    customers(),
+    store.list("orders"),
+    state.date,
+    today(),
+    store.cloud
+      ? state.summaryDate === state.date
+        ? state.daySummary
+        : null
+      : undefined,
+  );
   const focus = document.activeElement,
     selection = focus?.selectionStart,
     focusId = focus?.id;
@@ -459,6 +494,7 @@ function render() {
     );
   main.innerHTML = {
     orders: orderPage,
+    dashboard: dashboardPage,
     reports: reportsPage,
     customers: customerPage,
     quotes: quotesPage,
@@ -467,8 +503,8 @@ function render() {
   }[state.page]();
   $("#connection").classList.toggle("cloud", store.cloud);
   $("#connection").innerHTML = `<i></i>${e(store.status)}`;
-  $("#navPending").textContent = customers().filter(
-    (c) => status(c) === "pending",
+  $("#navPending").textContent = dayCustomers().filter((c) =>
+    ["pending", "overdue"].includes(status(c)),
   ).length;
   $("#footerStatus").textContent = store.cloud
     ? "共用雲端 · " + store.status
@@ -481,6 +517,7 @@ function render() {
   }
 }
 store.addEventListener("change", () => {
+  scheduleAnalytics();
   if (modalRecord?.id && $("#modal").open) {
     const r = store.get(modalRecord.kind, modalRecord.id);
     if (
@@ -521,14 +558,7 @@ async function loadPage() {
     store.mappingCounts = await store.rpc("lookup_counts");
   store.activeDay = state.date;
   if (!store.cloud) return;
-  for (const kind of [
-    "customers",
-    "profiles",
-    "vehicles",
-    "notices",
-    "groups",
-    "manual",
-  ])
+  for (const kind of ["customers", "profiles", "vehicles", "groups", "manual"])
     if (!store.loaded.has(kind)) await store.loadAllSmall(kind);
   if (state.page === "orders")
     await store.load("orders", { day: state.date, limit: 500 });
@@ -542,6 +572,10 @@ async function loadPage() {
       before: state.reportBefore,
       limit: 50,
     });
+  if (["orders", "dashboard"].includes(state.page)) {
+    clearTimeout(analyticsTimer);
+    await refreshAnalytics();
+  }
   if (state.page === "history") {
     const rs = await store.rpc("history", {
       p_date: state.date,
@@ -561,6 +595,11 @@ async function route() {
     : "orders";
   state.search = "";
   state.filter = "all";
+  if (state.page === "orders") state.summaryDate = null;
+  if (state.page === "dashboard" && store.cloud) {
+    state.monthLoading = true;
+    state.analyticsError = "";
+  }
   render();
   await safe(loadPage);
 }
@@ -628,6 +667,15 @@ main.addEventListener("change", (ev) =>
       state.quoteUnit = t.value;
       render();
     }
+    if (t.id === "dashboardMonth") {
+      if (!/^\d{4}-\d{2}$/.test(t.value)) return;
+      state.month = t.value;
+      state.monthLoading = store.cloud;
+      state.analyticsError = "";
+      state.search = "";
+      render();
+      await refreshAnalytics();
+    }
     if (t.id === "workDate") {
       if (!t.value) return;
       state.date = t.value;
@@ -666,9 +714,19 @@ main.addEventListener("change", (ev) =>
   }),
 );
 document.addEventListener("click", (ev) => {
+  const card = ev.target.closest("[data-order-card]");
+  if (card && !ev.target.closest("button,a,input,select,textarea")) {
+    safe(() => changeOrder(card.dataset.orderCard));
+    return;
+  }
   const t = ev.target.closest("button,a");
   if (!t) return;
   safe(async () => {
+    if (t.dataset.dashboardDay) {
+      state.date = t.dataset.dashboardDay;
+      location.hash = "orders";
+      return;
+    }
     if (t.dataset.filter) {
       state.filter = t.dataset.filter;
       render();
@@ -745,6 +803,21 @@ document.addEventListener("click", (ev) => {
   });
 });
 async function action(a) {
+  if (a === "toggle-sidebar") {
+    localStorage.setItem(
+      "chunghsin.sidebar.hidden",
+      String(!document.body.classList.contains("sidebar-hidden")),
+    );
+    applySidebarPreference();
+    return;
+  }
+  if (a === "series-settings") return seriesSettings();
+  if (a === "refresh-dashboard") {
+    state.monthLoading = true;
+    state.analyticsError = "";
+    render();
+    return refreshAnalytics();
+  }
   if (a === "cancel-inline") {
     state.editReport = null;
     return render();
@@ -791,34 +864,6 @@ async function action(a) {
   }
   if (a === "fixed-filter") {
     state.fixedOnly = !state.fixedOnly;
-    return render();
-  }
-  if (a === "warn-filter") {
-    if (!state.warnOnly) {
-      if (store.cloud)
-        state.warnCodes = await store.rpc("warn3", { p_date: state.date });
-      else {
-        const start = new Date(
-          new Date(state.date + "T00:00:00Z").getTime() - 2 * 86400000,
-        )
-          .toISOString()
-          .slice(0, 10);
-        state.warnCodes = customers()
-          .filter(
-            (c) =>
-              !store.list(
-                "orders",
-                (o) =>
-                  o.customer_code === c.code &&
-                  o.date >= start &&
-                  o.date <= state.date &&
-                  o.status === "ordered",
-              ).length,
-          )
-          .map((c) => c.code);
-      }
-    }
-    state.warnOnly = !state.warnOnly;
     return render();
   }
   if (a === "manual-trend") return manualTrend();
@@ -959,6 +1004,22 @@ document.addEventListener("submit", (ev) => {
     submit = f.querySelector('[type="submit"]');
   if (submit) submit.disabled = true;
   safe(async () => {
+    if (f.id === "seriesForm") {
+      const id = f.dataset.id || uid(),
+        existing = store.get("groups", id),
+        name = data.name.trim();
+      if (!name) throw Error("請填寫系列名稱");
+      if (store.list("groups", (g) => g.name === name && g.id !== id).length)
+        throw Error("已有同名自訂系列");
+      await store.mutate(
+        "groups",
+        id,
+        { name, customer_codes: new FormData(f).getAll("customer_codes") },
+        { revision: modalRecord?.revision ?? existing?.revision ?? 0 },
+      );
+      closeModal();
+      toast("自訂系列已儲存");
+    }
     if (f.id === "customerForm") {
       if (!modalRecord.id && store.get("customers", data.code))
         throw Error("此客戶代號已存在。");
@@ -1579,17 +1640,24 @@ async function exportOrders() {
     "固定叫貨",
     "更新時間",
   ]);
-  for (const o of store.list(
-    "orders",
-    (o) => state.page === "history" || o.date === state.date,
-  )) {
+  const exportRows =
+    state.page === "history"
+      ? store.list("orders")
+      : dayCustomers().map((c) => ({
+          ...order(c),
+          date: state.date,
+          customer_code: c.code,
+          status: status(c),
+          fixed: c.fixed,
+        }));
+  for (const o of exportRows) {
     const c = customers().find((c) => c.code === o.customer_code);
     s.addRow([
       o.date,
       o.customer_code,
       c?.name || "",
       c?.car_no || "",
-      { pending: "待叫貨", ordered: "已叫貨", off: "不叫貨" }[o.status],
+      ORDER_LABELS[o.status],
       o.fixed ? "是" : "否",
       o.at,
     ]);
@@ -1729,11 +1797,6 @@ $("#modal").addEventListener("cancel", (ev) => {
   ev.preventDefault();
   closeModal();
 });
-await route();
-await safe(async () => {
-  if (await store.initCloud()) await loadPage();
-});
-
 async function saveQuoteData(code, p, previous, items, map, start) {
   const operations = previous.map((old) => ({
     kind: "quote_items",
@@ -1956,3 +2019,269 @@ async function aliasesModal(code) {
           })),
     );
 }
+
+function dashboardData() {
+  if (store.cloud) return state.monthData;
+  return monthSummary(
+    customers(),
+    store.list("orders"),
+    store.list("groups"),
+    state.month,
+    today(),
+  );
+}
+function dashboardPage() {
+  const data = dashboardData();
+  const headingHtml = heading(
+    "Dashboard",
+    "按月查看叫貨概況，讓每一天與每個系列都看得清楚。",
+    `<label class="date-control">▦ <input type="month" id="dashboardMonth" aria-label="統計月份" value="${state.month}" max="${today().slice(0, 7)}"></label><button class="btn primary" data-action="series-settings">⚙ 設定系列</button>`,
+  );
+  if (
+    store.cloud &&
+    (state.monthLoading || !data || data.month !== state.month)
+  )
+    return (
+      headingHtml +
+      `<section class="panel" aria-live="polite">${state.analyticsError ? `<div class="form-note warning">${e(state.analyticsError)}<br>請先部署 sql/02_dashboard.sql，再重試。</div><button class="btn" data-action="refresh-dashboard">重新載入</button>` : empty("正在載入當月統計", "只讀取聚合結果，不下載整月原始明細。")}</section>`
+    );
+  const k = data.counts;
+  return (
+    headingHtml +
+    (state.analyticsError
+      ? `<div class="form-note warning">統計暫未更新：${e(state.analyticsError)}。以下為上次成功載入的資料。<button class="text-link" data-action="refresh-dashboard">重試</button></div>`
+      : "") +
+    `<section class="stats dashboard-stats" aria-label="當月叫貨統計">${stat("總計客戶", data.total_customers, 0, "♧", "", "目前啟用的客戶")}${dashboardStat("已叫貨", k.ordered, k.total, "✓", "green")}${dashboardStat("未叫貨", k.pending, k.total, "◷", "orange")}${dashboardStat("今日不叫貨", k.off, k.total, "−", "blue")}${dashboardStat("三日未叫貨", k.overdue, k.total, "!", "red")}</section><div class="form-note">統計月份：${state.month} · ${data.through ? "截至 " + data.through : "尚無可統計日期"}。狀態數字以「客戶日」計算：一位客戶一天算一筆；四類加總為 ${k.total} 客戶日。新客戶從追蹤起日納入，未來日期不計入。<br>三日未叫貨＝含當日在內連續三個日曆日無叫貨；當日已叫貨／今日不叫貨優先。系列可重疊，不將各系列加總當成全公司總計。</div><section class="panel"><div class="section-title"><h2>每日叫貨概況<span>MONTHLY OVERVIEW</span></h2><span class="subtle">點日期可開啟該日打勾單</span></div>${
+      data.days.length
+        ? `<div class="monthly-bars" aria-label="每日叫貨完成率">${data.days.map((d) => `<button class="day-bar" data-dashboard-day="${d.date}" aria-label="${d.date} 已叫 ${d.ordered} 家，總計 ${d.total} 家"><span class="bar-stack"><span class="bar-fill" style="height:${d.total ? (d.ordered / d.total) * 100 : 0}%"></span></span><strong>${d.ordered}</strong><small>${Number(d.date.slice(-2))}日</small></button>`).join("")}</div><div class="table-wrap dashboard-table"><table><thead><tr><th>日期</th><th>已叫貨</th><th>未叫貨</th><th>今日不叫貨</th><th>三日未叫貨</th><th>總計客戶</th><th>叫貨完成率</th></tr></thead><tbody>${data.days
+            .slice()
+            .reverse()
+            .map(
+              (d) =>
+                `<tr><td><button class="text-link" data-dashboard-day="${d.date}">${d.date}</button></td>${["ordered", "pending", "off", "overdue", "total"].map((key) => `<td>${d[key]}</td>`).join("")}<td>${d.total ? Math.round((d.ordered / d.total) * 100) : 0}%</td></tr>`,
+            )
+            .join("")}</tbody></table></div>`
+        : empty("這個月份尚無可統計日期", "可選擇本月或已有追蹤資料的月份。")
+    }</section><section class="panel" style="margin-top:24px"><div class="section-title"><h2>系列客戶<span>SERIES PERFORMANCE</span></h2><button class="text-link" data-action="series-settings">新增／編輯自訂系列 →</button></div><div class="series-grid">${
+      data.series.length
+        ? data.series
+            .map(
+              (g) =>
+                `<article class="series-card"><div class="section-title"><h3>${e(g.name)}</h3><span class="badge">${g.total_customers} 家</span></div><p class="subtle">${e(g.source)} · 本月 ${g.total} 客戶日</p><dl class="series-counts">${Object.entries(
+                  ORDER_LABELS,
+                )
+                  .map(
+                    ([key, label]) =>
+                      `<div><dt>${label}</dt><dd>${g[key]}</dd></div>`,
+                  )
+                  .join("")}</dl></article>`,
+            )
+            .join("")
+        : empty("尚無系列", "新增客戶後，可在此自行選擇系列成員。")
+    }</div></section><section class="panel" style="margin-top:24px"><div class="section-title"><h2>各客戶當月狀況</h2><label class="search">⌕ <input id="search" placeholder="搜尋客戶名稱、代號…" aria-label="搜尋當月客戶" value="${e(state.search)}"></label></div><div class="table-wrap"><table><thead><tr><th>客戶代號</th><th>客戶名稱</th><th>系列</th><th>已叫貨天數</th><th>未叫貨天數</th><th>不叫貨天數</th><th>三日未叫貨天數</th><th>追蹤天數</th></tr></thead><tbody>${data.customers
+      .filter((c) =>
+        [c.code, c.name, c.group]
+          .join(" ")
+          .toLowerCase()
+          .includes(state.search.toLowerCase()),
+      )
+      .map(
+        (c) =>
+          `<tr><td>${e(c.code)}</td><td>${e(c.name)}</td><td>${e(c.group)}</td>${["ordered", "pending", "off", "overdue", "total"].map((key) => `<td>${c[key]}</td>`).join("")}</tr>`,
+      )
+      .join(
+        "",
+      )}</tbody></table></div></section><p class="subtle" style="margin-top:15px">以目前啟用的客戶、系列成員與保存的每日狀態計算；不是舊客戶主檔的歷史快照。停用客戶不納入此營運 Dashboard。</p>`
+  );
+}
+function dashboardStat(label, n, total, sign, color) {
+  return stat(label, n, total, sign, color, "本月累計客戶日").replace(
+    "<small>位</small>",
+    "<small>客戶日</small>",
+  );
+}
+function seriesSettings(id) {
+  const existing = id ? store.get("groups", id) : null;
+  modalRecord = existing
+    ? { kind: "groups", id, revision: existing.revision }
+    : null;
+  openModal(
+    "自訂系列客戶",
+    `<div class="form-note">可自行建立系列並選擇多位成員；同一位客戶可以加入多個自訂系列。客戶主檔原有系列仍會自動顯示。</div><div class="series-settings-list"><button class="chip ${!id ? "active" : ""}" data-series-new>＋ 新系列</button>${store
+      .list("groups", (g) => Array.isArray(g.customer_codes))
+      .map(
+        (g) =>
+          `<button class="chip ${id === g.id ? "active" : ""}" data-series-edit="${e(g.id)}">${e(g.name)}</button>`,
+      )
+      .join(
+        "",
+      )}</div><form id="seriesForm" data-id="${e(id || "")}">${field("系列名稱 *", "name", existing?.name || "", "text", 'required maxlength="100"')}<div class="series-member-toolbar"><strong>選擇系列客戶</strong><button type="button" class="text-link" data-series-all>全選</button><button type="button" class="text-link" data-series-none>清空</button></div><div class="series-members">${
+      customers()
+        .map(
+          (c) =>
+            `<label><input type="checkbox" name="customer_codes" value="${e(c.code)}" ${existing?.customer_codes?.includes(c.code) ? "checked" : ""}><span>${e(c.name)}<small>${e(c.code)}</small></span></label>`,
+        )
+        .join("") || '<p class="subtle">請先新增客戶。</p>'
+    }</div><div class="form-actions">${existing ? '<button type="button" class="btn danger" data-series-delete>刪除此系列</button>' : ""}<button type="button" class="btn" data-action="close-modal">取消</button><button type="submit" class="btn primary">儲存系列</button></div></form>`,
+    true,
+  );
+  $("#modalBody").querySelector("[data-series-new]").onclick = () =>
+    seriesSettings();
+  $("#modalBody")
+    .querySelectorAll("[data-series-edit]")
+    .forEach((b) => (b.onclick = () => seriesSettings(b.dataset.seriesEdit)));
+  const checks = () =>
+    $("#seriesForm").querySelectorAll('[name="customer_codes"]');
+  $("[data-series-all]").onclick = () =>
+    checks().forEach((c) => (c.checked = true));
+  $("[data-series-none]").onclick = () =>
+    checks().forEach((c) => (c.checked = false));
+  if (existing)
+    $("[data-series-delete]").onclick = () =>
+      safe(async () => {
+        if (!confirm("刪除這個自訂系列？客戶與叫貨紀錄會保留。")) return;
+        await store.mutate("groups", id, existing, {
+          revision: existing.revision,
+          remove: true,
+        });
+        seriesSettings();
+      });
+}
+let analyticsTimer,
+  analyticsRequest = 0,
+  analyticsSeen = -1;
+async function refreshAnalytics() {
+  if (!store.cloud || !["orders", "dashboard"].includes(state.page)) return;
+  const request = ++analyticsRequest,
+    page = state.page,
+    day = state.date,
+    month = state.month,
+    revision = store.analyticsRevision;
+  const codes = [...store.analyticsCustomers.keys()];
+  const patch =
+    page === "dashboard" &&
+    !state.monthLoading &&
+    !store.analyticsFullRefresh &&
+    state.monthData?.month === month &&
+    codes.length > 0 &&
+    codes.length <= Math.max(1, customers().length / 2);
+  const dayCodes = [...store.analyticsCustomers]
+    .filter(([, version]) => version > (state.daySummaryVersion ?? -1))
+    .map(([code]) => code);
+  const dayPatch =
+    page === "orders" &&
+    state.summaryDate === day &&
+    state.daySummary &&
+    Object.keys(state.daySummary).length === customers().length &&
+    customers().every((c) => Object.hasOwn(state.daySummary, c.code));
+  try {
+    const result =
+      page === "dashboard"
+        ? await store.rpc(
+            patch ? "dashboard_customers" : "month_dashboard",
+            patch ? { p_month: month, p_codes: codes } : { p_month: month },
+          )
+        : dayPatch
+          ? dayCodes.length
+            ? await store.rpc("order_summaries", {
+                p_date: day,
+                p_codes: dayCodes,
+              })
+            : {}
+          : await store.rpc("order_summary", { p_date: day });
+    if (
+      request !== analyticsRequest ||
+      page !== state.page ||
+      day !== state.date ||
+      month !== state.month
+    )
+      return;
+    if (page === "dashboard") {
+      if (patch && result.some((c) => !c)) {
+        store.analyticsFullRefresh = true;
+        return refreshAnalytics();
+      }
+      state.monthData = patch
+        ? patchMonthSummary(state.monthData, result)
+        : result;
+      state.monthLoading = false;
+      if (store.analyticsRevision === revision) {
+        store.analyticsCustomers.clear();
+        store.analyticsFullRefresh = false;
+      }
+    } else {
+      state.daySummary = dayPatch ? { ...state.daySummary, ...result } : result;
+      state.summaryDate = day;
+      state.daySummaryVersion = revision;
+    }
+    state.analyticsError = "";
+    analyticsSeen = revision;
+    render();
+    if (store.analyticsRevision !== revision) scheduleAnalytics();
+  } catch (err) {
+    if (
+      request !== analyticsRequest ||
+      page !== state.page ||
+      day !== state.date ||
+      month !== state.month
+    )
+      return;
+    state.monthLoading = false;
+    state.analyticsError = err.message;
+    render();
+    toast("叫貨統計載入失敗，請確認已部署 02_dashboard.sql。");
+  }
+}
+function scheduleAnalytics() {
+  if (!store.cloud || store.analyticsRevision === analyticsSeen) return;
+  clearTimeout(analyticsTimer);
+  analyticsTimer = setTimeout(refreshAnalytics, 200);
+}
+function applySidebarPreference() {
+  const hidden = localStorage.getItem("chunghsin.sidebar.hidden") === "true";
+  document.body.classList.toggle("sidebar-hidden", hidden);
+  const sidebar = $("#sidebar");
+  sidebar.inert = hidden;
+  sidebar.setAttribute("aria-hidden", String(hidden));
+  const button = $("#sidebarToggle");
+  button.setAttribute("aria-expanded", String(!hidden));
+  button.setAttribute("aria-label", hidden ? "顯示側欄" : "隱藏側欄");
+  button.title = hidden ? "顯示側欄" : "隱藏側欄";
+}
+
+main.addEventListener("contextmenu", (ev) => {
+  const card = ev.target.closest("[data-order-card]");
+  if (!card) return;
+  ev.preventDefault();
+  safe(() => changeOrder(card.dataset.orderCard, "off"));
+});
+main.addEventListener("keydown", (ev) => {
+  if (
+    ev.target.matches("[data-order-card]") &&
+    ["Enter", " "].includes(ev.key)
+  ) {
+    ev.preventDefault();
+    safe(() => changeOrder(ev.target.dataset.orderCard));
+  }
+});
+let lastBusinessDay = today();
+function checkBusinessDay() {
+  if (document.hidden) return;
+  const next = today();
+  if (next === lastBusinessDay) return;
+  const previous = lastBusinessDay;
+  lastBusinessDay = next;
+  if (state.date === previous) state.date = next;
+  if (state.month === previous.slice(0, 7)) state.month = next.slice(0, 7);
+  state.summaryDate = null;
+  store.analyticsFullRefresh = true;
+  render();
+  safe(loadPage);
+}
+setInterval(checkBusinessDay, 60000);
+document.addEventListener("visibilitychange", checkBusinessDay);
+applySidebarPreference();
+await route();
+await safe(async () => {
+  if (await store.initCloud()) await loadPage();
+});

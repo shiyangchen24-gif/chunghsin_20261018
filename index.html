@@ -9,11 +9,11 @@
       content="忠欣蔬果內部工作台：每日叫貨、異常交接、客戶與報價管理。"
     />
     <title>忠欣蔬果｜營運工作台</title>
-    <link rel="stylesheet" href="styles.css?v=1.0.0" />
+    <link rel="stylesheet" href="styles.css?v=1.1.0" />
   </head>
   <body>
     <a class="skip" href="#main">跳至主要內容</a>
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <a class="brand" href="#orders"
         ><span class="brand-mark">✳</span
         ><span>忠欣蔬果<small>CHUNGHSIN WORKSPACE</small></span></a
@@ -35,6 +35,9 @@
           ><span class="nav-icon">▧</span>報價單管理</a
         >
         <div class="nav-label">資料管理</div>
+        <a href="#dashboard" data-page="dashboard"
+          ><span class="nav-icon">▥</span>Dashboard</a
+        >
         <a href="#customers" data-page="customers"
           ><span class="nav-icon">♧</span>客戶與車輛</a
         >
@@ -49,7 +52,7 @@
         <div class="mini-plant">🌱</div>
         <strong>把繁瑣留給系統</strong>
         <p>把新鮮，準時送到每一位客戶。</p>
-        <span class="version">工作台 v1.0.0</span>
+        <span class="version">工作台 v1.1.0</span>
       </div>
       <div class="sidebar-footer">
         <span class="avatar">忠</span>
@@ -64,8 +67,20 @@
     </aside>
     <div class="app-shell">
       <header class="topbar">
-        <div class="breadcrumbs">
-          工作空間 <span>/</span> <strong id="breadcrumb">每日打勾單</strong>
+        <div class="topbar-left">
+          <button
+            id="sidebarToggle"
+            class="sidebar-toggle"
+            data-action="toggle-sidebar"
+            aria-controls="sidebar"
+            aria-expanded="true"
+            aria-label="隱藏側欄"
+          >
+            ☰
+          </button>
+          <div class="breadcrumbs">
+            工作空間 <span>/</span> <strong id="breadcrumb">每日打勾單</strong>
+          </div>
         </div>
         <div class="top-actions">
           <span id="connection" class="connection" aria-live="polite"
@@ -100,6 +115,6 @@
       <div id="modalBody"></div>
     </dialog>
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=1.0.0"></script>
+    <script type="module" src="app.js?v=1.1.0"></script>
   </body>
 </html>

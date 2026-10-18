@@ -1,4 +1,4 @@
-import { loadScript } from "./store.js";
+import { loadScript } from "./store.js?v=1.1.0";
 export const fields = [
   "貨號",
   "品名",

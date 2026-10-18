@@ -17,6 +17,12 @@ async function setup() {
   );
   await db.exec(migration);
   await db.exec(migration);
+  const dashboard = await readFile(
+    new URL("../sql/02_dashboard.sql", import.meta.url),
+    "utf8",
+  );
+  await db.exec(dashboard);
+  await db.exec(dashboard);
   await db.exec(
     `insert into cs_members values('${admin}','admin',true),('${viewer}','viewer',true);select set_config('request.jwt.claim.sub','${admin}',false);`,
   );
@@ -114,4 +120,160 @@ test("批次任一筆版本衝突整體回滾，viewer 可讀但不可直接寫�
     /permission denied/,
   );
   await db.exec("reset role");
+});
+
+test("Dashboard 月聚合與前端完全一致，跨月歷史、系列、四狀態及登入權限", async () => {
+  await setup();
+  await db.exec(`select set_config('request.jwt.claim.sub','${admin}',false)`);
+  const { monthSummary } = await import("../js/orders.js");
+  await write("customers", "D001", {
+    code: "D001",
+    name: "月報客戶",
+    group: "飯店",
+    active: true,
+    tracking_since: "2026-09-29",
+  });
+  await write("customers", "D002", {
+    code: "D002",
+    name: "新客戶",
+    group: "飯店",
+    active: true,
+    tracking_since: "2026-10-02",
+  });
+  await write("orders", "2026-09-30:D001", {
+    date: "2026-09-30",
+    customer_code: "D001",
+    status: "ordered",
+  });
+  await write("orders", "2026-10-01:D001", {
+    date: "2026-10-01",
+    customer_code: "D001",
+    status: "off",
+  });
+  await write("orders", "2026-10-03:D002", {
+    date: "2026-10-03",
+    customer_code: "D002",
+    status: "ordered",
+  });
+  await write("groups", "custom-hotels", {
+    name: "自訂飯店",
+    customer_codes: ["D001", "D002"],
+  });
+  const data = (await db.query("select cs_month_dashboard('2026-10') as r"))
+    .rows[0].r;
+  const customers = (
+    await db.query("select id,data from cs_customers where not deleted")
+  ).rows.map((x) => ({ ...x.data, id: x.id }));
+  const orders = (
+    await db.query("select data from cs_orders where not deleted")
+  ).rows.map((x) => x.data);
+  const groups = (
+    await db.query("select id,data from cs_groups where not deleted")
+  ).rows.map((x) => ({ ...x.data, id: x.id }));
+  const js = monthSummary(
+    customers,
+    orders,
+    groups,
+    "2026-10",
+    (
+      await db.query(
+        "select (now() at time zone 'Asia/Taipei')::date::text as day",
+      )
+    ).rows[0].day,
+  );
+  assert.deepEqual(data.days, js.days);
+  assert.deepEqual(data.counts, js.counts);
+  assert.deepEqual(data.customers, js.customers);
+  assert.deepEqual(
+    data.series.find((x) => x.id === "custom-hotels"),
+    js.series.find((x) => x.id === "custom-hotels"),
+  );
+  const partial = (
+    await db.query(
+      "select cs_dashboard_customers('2026-10',array['D001','D002']) as r",
+    )
+  ).rows[0].r;
+  for (const row of partial)
+    assert.deepEqual(
+      row,
+      data.customers.find((c) => c.code === row.code),
+    );
+  const summary = (await db.query("select cs_order_summary('2026-10-02') as r"))
+    .rows[0].r;
+  const single = (
+    await db.query("select cs_order_summaries('2026-10-02',array['D001']) as r")
+  ).rows[0].r;
+  assert.deepEqual(single, { D001: summary.D001 });
+  assert.equal(summary.D001.last_ordered_before, "2026-09-30");
+  assert.equal(
+    (await db.query("select cs_warn3('2026-10-03') as r")).rows[0].r.includes(
+      "D001",
+    ),
+    true,
+  );
+  assert.equal(
+    (await db.query("select cs_warn3('2026-10-01') as r")).rows[0].r.includes(
+      "D001",
+    ),
+    false,
+  );
+  await db.exec(
+    `select set_config('request.jwt.claim.sub','${viewer}',false);set role authenticated`,
+  );
+  await db.query("select cs_month_dashboard('2026-10')");
+  await db.exec(
+    `reset role;select set_config('request.jwt.claim.sub','',false)`,
+  );
+  await assert.rejects(
+    db.query("select cs_month_dashboard('2026-10')"),
+    /先登入/,
+  );
+});
+
+test("02 升級補值保留既有資料、通知只產生一次，重跑不再增加版本", async () => {
+  await setup();
+  await db.exec(
+    `select set_config('request.jwt.claim.sub','${admin}',false);drop trigger cs_customer_tracking on cs_customers;`,
+  );
+  await db.query(
+    "insert into cs_customers(id,data,revision) values('LEGACY',$1::jsonb,8)",
+    [
+      JSON.stringify({
+        code: "LEGACY",
+        name: "舊客戶",
+        active: true,
+        unknown: { keep: true },
+      }),
+    ],
+  );
+  await write("orders", "2026-09-20:LEGACY", {
+    date: "2026-09-20",
+    customer_code: "LEGACY",
+    status: "ordered",
+  });
+  const migration = await readFile(
+    new URL("../sql/02_dashboard.sql", import.meta.url),
+    "utf8",
+  );
+  await db.exec(migration);
+  const after = (
+    await db.query("select data,revision from cs_customers where id='LEGACY'")
+  ).rows[0];
+  assert.equal(after.data.tracking_since, "2026-09-20");
+  assert.equal(after.revision, 9);
+  assert.deepEqual(after.data.unknown, { keep: true });
+  await db.exec(migration);
+  assert.equal(
+    (await db.query("select revision from cs_customers where id='LEGACY'"))
+      .rows[0].revision,
+    9,
+  );
+  assert.equal(
+    (
+      await db.query(
+        "select count(*)::int as n from cs_change_log where kind='customers' and id='LEGACY'",
+      )
+    ).rows[0].n,
+    1,
+  );
 });

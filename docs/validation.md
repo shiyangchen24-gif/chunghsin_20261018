@@ -51,3 +51,13 @@ PGlite 不等於 Supabase Auth、PostgREST 或 Realtime 整合測試。瀏覽器
 預算：打勾單 0.9 GB、異常交接 0.7 GB、報價 0.9 GB、共用 0.5 GB；3 GB 提醒、4 GB 警戒。網站目前展示本頁 API 回應量，不會自動讀取 Supabase Dashboard Usage，也尚未實作 Dashboard 用量門檻自動關閉背景預載。500 MB DB、200 萬訊息、200 連線與 5 GB 一般 Egress 均需核對帳戶當期方案；cached egress 不能挪為一般 egress。
 
 實測請匯出瀏覽器 Network HAR（先清除授權資訊）與 WS frame 大小，記錄各操作頻率、事件接收者、查詢次數，與 Supabase Dashboard Usage 以相同期間對帳。長時間測試記錄最大記憶體、重連次數、失敗率、同步 p95；不可只記 API 200。
+
+## v1.1 新增驗證
+
+- 三日狀態：當日與前兩日、跨月、新客戶、當日不叫貨優先；四類互斥且加總一致。
+- 追蹤起日只補一次，保留未知欄位；月報不計未來／建立前日期；可重疊系列不重複計入公司總計。
+- 前端月報與 SQL 聚合結果逐筆一致；單客戶增量更新與全量重算結果相同；一般異動只呼叫受影響客戶摘要。
+- Chromium 驗證側欄完全隱藏、恢復與重載記憶；卡片左鍵／右鍵／Enter、光澤進度、減少動態效果、Dashboard 月統計、系列保存與日期鑽取。
+- 雲端介面測試使用模擬 RPC，不是正式 Supabase 部署或多裝置驗收。
+
+本次 v1.1 驗證結果：語法檢查通過、15 項邏輯／PostgreSQL 相容資料庫測試通過、9 項 Chromium 測試通過。另人工檢視桌機截圖與確認 390px Dashboard 無頁面水平溢位；未執行正式 Supabase 部署或真實多裝置同步驗收。

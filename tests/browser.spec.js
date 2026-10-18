@@ -100,12 +100,16 @@ test("報價三步匯入、品項儲存、Excel 精確欄位與取消匯出", as
   await expect(page.locator("#modal")).not.toBeVisible();
   await page.locator('[data-quote-select="DEMO001"]').check();
   await page.evaluate(() => {
+    window.pickerCancelled = false;
     window.showSaveFilePicker = async () => {
+      window.pickerCancelled = true;
       throw new DOMException("cancel", "AbortError");
     };
   });
   await page.locator('[data-action="export-quotes"]').click();
-  await page.waitForTimeout(200);
+  await expect
+    .poll(() => page.evaluate(() => window.pickerCancelled))
+    .toBe(true);
   expect(
     await page.evaluate(
       () =>

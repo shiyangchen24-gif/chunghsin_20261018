@@ -1,12 +1,12 @@
 {
   "name": "chunghsin-workspace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "python3 -m http.server 5173 --bind 0.0.0.0",
     "test": "node --test tests/*.test.js",
-    "check": "node --check app.js && node --check js/store.js && node --check js/excel.js",
+    "check": "node --check app.js && node --check js/store.js && node --check js/excel.js && node --check js/orders.js",
     "test:browser": "playwright test"
   },
   "devDependencies": {
